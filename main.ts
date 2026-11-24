@@ -10,6 +10,46 @@ const IM = '014' + '0'.repeat(45) + '2222' + '0'.repeat(32);
 const PO = '00011223' + '00000000' + '22222221' + '22212220' + '222' + '0'.repeat(13) + '0110' + '0' + '0'.repeat(11) + '12' + '0'.repeat(14) + '1101';
 const PU = '01102233' + '00000000' + '11111111' + '11111110' + '111' + '0'.repeat(29) + '10' + '0'.repeat(14) + '0010';
 
+// The unsigned 16-bit little-endian value stored in the two bytes immediately before index
+// `at`. Jump and call instructions keep their operand there: branches sign-extend the value
+// they read through this helper, calls use it unchanged as the target address.
+function imm16(p: Uint8Array, at: number): number {
+  return p[at - 2] | (p[at - 1] << 8);
+}
+
+// One binary operation on the two stack values a (below) and b (top): arithmetic, bitwise
+// logic, a shift, or a comparison, for opcodes 16..34. Returns the 32-bit result, or null
+// when the operation divides or takes a remainder by zero; the caller turns null into the
+// division trap, leaving the stack untouched just as the trapped operation would.
+function binop(op: number, a: number, b: number): number | null {
+  switch (op) {
+    case 16: return (a + b) | 0;
+    case 17: return (a - b) | 0;
+    case 18: return Math.imul(a, b);
+    case 19:
+      if (b === 0) return null;
+      return a === -2147483648 && b === -1 ? a : (a / b) | 0;
+    case 20:
+      if (b === 0) return null;
+      return b === -1 ? 0 : (a % b) | 0;
+    case 21:
+      if (b === 0) return null;
+      return Math.floor((a >>> 0) / (b >>> 0)) | 0;
+    case 22:
+      if (b === 0) return null;
+      return (a >>> 0) % (b >>> 0) | 0;
+    case 24: return a & b;
+    case 25: return a | b;
+    case 26: return a ^ b;
+    case 28: return a << (b & 31);
+    case 29: return a >> (b & 31);
+    case 30: return (a >>> (b & 31)) | 0;
+    case 32: return a === b ? 1 : 0;
+    case 33: return a < b ? 1 : 0;
+    default: return (a >>> 0) < (b >>> 0) ? 1 : 0;
+  }
+}
+
 function run(p: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number } {
   const n = p.length;
   const D = new Int32Array(256);
@@ -38,33 +78,8 @@ function run(p: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number } 
     const nx = pc + 1 + imm;
     pc = nx;
     if (op > 15 && op < 35 && op !== 23 && op !== 27) {
-      const b = D[sp - 1];
-      const a = D[sp - 2];
-      let r: number;
-      if (op === 16) r = (a + b) | 0;
-      else if (op === 17) r = (a - b) | 0;
-      else if (op === 18) r = Math.imul(a, b);
-      else if (op === 19) {
-        if (b === 0) return end(4);
-        r = a === -2147483648 && b === -1 ? a : (a / b) | 0;
-      } else if (op === 20) {
-        if (b === 0) return end(4);
-        r = b === -1 ? 0 : a % b | 0;
-      } else if (op === 21) {
-        if (b === 0) return end(4);
-        r = Math.floor((a >>> 0) / (b >>> 0)) | 0;
-      } else if (op === 22) {
-        if (b === 0) return end(4);
-        r = (a >>> 0) % (b >>> 0) | 0;
-      } else if (op === 24) r = a & b;
-      else if (op === 25) r = a | b;
-      else if (op === 26) r = a ^ b;
-      else if (op === 28) r = a << (b & 31);
-      else if (op === 29) r = a >> (b & 31);
-      else if (op === 30) r = (a >>> (b & 31)) | 0;
-      else if (op === 32) r = a === b ? 1 : 0;
-      else if (op === 33) r = a < b ? 1 : 0;
-      else r = (a >>> 0) < (b >>> 0) ? 1 : 0;
+      const r = binop(op, D[sp - 2], D[sp - 1]);
+      if (r === null) return end(4);
       D[sp - 2] = r;
       sp--;
       continue;
@@ -111,7 +126,7 @@ function run(p: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number } 
       case 48:
       case 49:
       case 50: {
-        const rel = ((p[nx - 2] | (p[nx - 1] << 8)) << 16) >> 16;
+        const rel = (imm16(p, nx) << 16) >> 16;
         if (op === 48) pc = nx + rel;
         else {
           const v = D[--sp];
@@ -122,7 +137,7 @@ function run(p: Uint8Array, inp: Uint8Array): { out: Uint8Array; code: number } 
       case 51:
         if (csp === 64) return end(7);
         C[csp++] = nx;
-        pc = p[nx - 2] | (p[nx - 1] << 8);
+        pc = imm16(p, nx);
         break;
       case 52:
         if (csp === 0) return end(8);
